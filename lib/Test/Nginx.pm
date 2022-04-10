@@ -28,6 +28,7 @@ use IO::Socket;
 use POSIX qw/ waitpid WNOHANG /;
 use Socket qw/ CRLF /;
 use Test::More qw//;
+use Time::HiRes qw / gettimeofday usleep /;
 
 ###############################################################################
 
@@ -934,6 +935,14 @@ sub http_gzip_like {
 
 		Test::More->builder->like($out, $re, $name);
 	}
+}
+
+###############################################################################
+
+sub wait_for_non_flakey_test_start_timing {
+	my ($unused, $usec) = gettimeofday();
+	my $wait_usec = ($usec < 400_000 ? 500_000 : 1_500_000) - $usec;
+	usleep($wait_usec);
 }
 
 ###############################################################################
