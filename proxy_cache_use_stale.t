@@ -206,7 +206,7 @@ like(http_get('/regexp.html'), qr/HIT/, 's-w-r - regexp revalidated');
 
 $t->write_file('t6.html', 'SEE-THAT');
 
-my $s = get('/t6.html', 'max-age=1, stale-while-revalidate=2', start => 1);
+my $s = get('/t6.html', 'max-age=5, stale-while-revalidate=2', start => 1);
 select undef, undef, undef, 0.2;
 like(http_get('/t6.html'), qr/UPDATING.*SEE-THIS/s, 's-w-r - updating');
 like(http_end($s), qr/STALE.*SEE-THIS/s, 's-w-r - updating stale');
