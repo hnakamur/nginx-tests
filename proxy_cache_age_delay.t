@@ -97,13 +97,13 @@ $t->run();
 my $res = http_get('/?delay=1000&age=1');
 printf(STDERR "res=\n%s\n", $res);
 like($res,
-    qr/\r\nAge: 1\r\nX-Cache-Status: MISS\r\n/,
-    'with origin age and response delay');
+     qr/\r\nAge: 1\r\n.*\r\nX-Cache-Status: MISS\r\n/s,
+     'with origin age and response delay');
 
 my $res2 = http_get('/?delay=1000&age=1');
 printf(STDERR "res=\n%s\n", $res2);
 like($res2,
-    qr/\r\nAge: 2\r\nX-Cache-Status: HIT\r\n/,
+    qr/\r\nAge: 2\r\n.*\r\nX-Cache-Status: HIT\r\n/s,
     'with origin age and response delay');
 
 ###############################################################################

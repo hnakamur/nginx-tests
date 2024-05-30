@@ -126,10 +126,10 @@ like(http_gzip_request('/empty.html'),
 	'empty get stale');
 
 like(http_get('/t3.html?age=1'),
-    qr/\r\nAge: 1\r\nX-Cache-Status: MISS\r\n/,
+    qr/\r\nAge: 1\r\n.*\r\nX-Cache-Status: MISS\r\n/s,
     'initial age from origin');
 like(http_get('/t3.html?age=1'),
-    qr/\r\nAge: 1\r\nX-Cache-Status: HIT\r\n/,
+    qr/\r\nAge: 1\r\n.*\r\nX-Cache-Status: HIT\r\n/s,
     'get cache with initial age');
 
 # no client connection close with response on non-cacheable HEAD requests
