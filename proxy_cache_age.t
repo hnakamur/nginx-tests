@@ -21,7 +21,7 @@ use Test::Nginx qw/ :DEFAULT :gzip /;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http proxy cache gzip/)->plan(17)
+my $t = Test::Nginx->new()->has(qw/http proxy cache gzip/)->plan(24)
 	->write_file_expand('nginx.conf', <<'EOF');
 
 %%TEST_GLOBALS%%
@@ -37,6 +37,11 @@ http {
     proxy_cache_path   %%TESTDIR%%/cache  levels=1:2
                        keys_zone=NAME:1m;
 
+    map $arg_slow $rate {
+        default 8k;
+        1       200;
+    }
+
     server {
         listen       127.0.0.1:8080;
         server_name  localhost;
@@ -46,29 +51,17 @@ http {
 
         location / {
             proxy_pass    http://127.0.0.1:8081;
-
             proxy_cache   NAME;
-
-            proxy_cache_valid   200 302  2s;
-            proxy_cache_valid   301      1d;
-            proxy_cache_valid   any      1m;
-
-            proxy_cache_min_uses  1;
-
-            proxy_cache_use_stale  error timeout invalid_header http_500
-                                   http_404;
-
-            proxy_no_cache  $arg_e;
-
-            add_header X-Cache-Status $upstream_cache_status;
+            proxy_cache_valid 1m;
         }
     }
+
     server {
         listen       127.0.0.1:8081;
         server_name  localhost;
 
         location / {
-            limit_rate 512;
+            limit_rate $rate;
             add_header Age $arg_age;
         }
     }
@@ -77,86 +70,42 @@ http {
 EOF
 
 $t->write_file('t.html', 'SEE-THIS');
-$t->write_file('t2.html', 'SEE-THIS');
-$t->write_file('t3.html', 'SEE-THIS');
-$t->write_file('empty.html', '');
-$t->write_file('big.html', 'x' x 1024);
 
 $t->run();
 
 ###############################################################################
 
-my $res = http_get('/t.html');
-# printf(STDERR "res=\n%s\n", $res);
-like($res, qr/SEE-THIS/, 'proxy request');
+test_age('/t.html', undef, 0, 2);
+test_age('/t.html?age=1', 1, 1, 3);
+test_age('/t.html?slow=1', undef, 1, 3);
+test_age('/t.html?age=1&slow=1', 1, 2, 4);
 
-$t->write_file('t.html', 'NOOP');
-like(http_get('/t.html'), qr/SEE-THIS/, 'proxy request cached');
-
-unlike(http_head('/t2.html'), qr/SEE-THIS/, 'head request');
-like(http_get('/t2.html'), qr/SEE-THIS/, 'get after head');
-unlike(http_head('/t2.html'), qr/SEE-THIS/, 'head after get');
-
-like(http_head('/empty.html?head'), qr/MISS/, 'empty head first');
-
-select(undef, undef, undef, 1.0);
-
-like(http_head('/empty.html?head'),
-    qr/\r\nX-Cache-Status: HIT\r\n/,
-    'empty head second');
-
-like(http_get_range('/t.html', 'Range: bytes=4-'), qr/^THIS/m, 'cached range');
-like(http_get_range('/t.html', 'Range: bytes=0-2,4-'), qr/^SEE.*^THIS/ms,
-	'cached multipart range');
-
-like(http_get('/empty.html'), qr/MISS/, 'empty get first');
-like(http_get('/empty.html'), qr/HIT/, 'empty get second');
-
-select(undef, undef, undef, 3.1);
-unlink $t->testdir() . '/t.html';
-my $res4 = http_gzip_request('/t.html');
-printf("res4=%s\n", $res4);
-like($res4,
-	qr/HTTP.*STALE.*1c\x0d\x0a.{28}\x0d\x0a0\x0d\x0a\x0d\x0a\z/s,
-	'non-empty get stale');
-
-unlink $t->testdir() . '/empty.html';
-like(http_gzip_request('/empty.html'),
-	qr/HTTP.*STALE.*14\x0d\x0a.{20}\x0d\x0a0\x0d\x0a\x0d\x0a\z/s,
-	'empty get stale');
-
-like(http_get('/t3.html?age=1'),
-    qr/\r\nAge: 1\r\n.*\r\nX-Cache-Status: MISS\r\n/s,
-    'initial age from origin');
-like(http_get('/t3.html?age=1'),
-    qr/\r\nAge: 1\r\n.*\r\nX-Cache-Status: HIT\r\n/s,
-    'get cache with initial age');
-
-# no client connection close with response on non-cacheable HEAD requests
-# see 545b5e4d83b2 in nginx for detailed explanation
-
-my $s = http(<<EOF, start => 1);
-HEAD /big.html?e=1 HTTP/1.1
-Host: localhost
-
-EOF
-
-my $r = http_get('/t.html', socket => $s);
-
-like($r, qr/Connection: keep-alive/, 'non-cacheable head - keepalive');
-like($r, qr/SEE-THIS/, 'non-cacheable head - second');
+$t->stop();
 
 ###############################################################################
 
-sub http_get_range {
-	my ($url, $extra) = @_;
-	return http(<<EOF);
-GET $url HTTP/1.1
-Host: localhost
-Connection: close
-$extra
+sub test_age {
+    my ($path, $age1, $age2, $age3) = @_;
 
-EOF
+    my ($res, $sid, $frames, $frame);
+
+    $res = http_get($path);
+    like($res, qr/^HTTP\/1.1 200 /, 'status');
+    if (defined($age1)) {
+        like($res, qr/\r\nAge: $age1\r\n/, 'age');
+    } else {
+        unlike($res, qr/\r\nAge: /, 'age');
+    }
+
+    $res = http_get($path);
+    like($res, qr/^HTTP\/1.1 200 /, 'status');
+    like($res, qr/\r\nAge: $age2\r\n/, 'age');
+
+    select undef, undef, undef, 2.0;
+
+    $res = http_get($path);
+    like($res, qr/^HTTP\/1.1 200 /, 'status');
+    like($res, qr/\r\nAge: $age3\r\n/, 'age');
 }
 
 ###############################################################################

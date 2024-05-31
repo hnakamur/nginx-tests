@@ -24,7 +24,7 @@ select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
 my $t = Test::Nginx->new()
-	->has(qw/http http_ssl http_v2 proxy cache socket_ssl/)
+	->has(qw/http http_ssl http_v2 proxy cache socket_ssl/)->plan(25)
 	->has_daemon('openssl');
 
 $t->write_file_expand('nginx.conf', <<'EOF');
@@ -41,15 +41,17 @@ http {
 
     proxy_cache_path   %%TESTDIR%%/cache  keys_zone=NAME:1m;
 
+    map $arg_slow $rate {
+        default 8k;
+        1       200;
+    }
+
     server {
-        listen       127.0.0.1:8080 http2 ssl sndbuf=32k;
+        listen       127.0.0.1:8080 http2 ssl;
         server_name  localhost;
 
         ssl_certificate_key localhost.key;
         ssl_certificate localhost.crt;
-
-        send_timeout 1s;
-        lingering_close off;
 
         location / {
             proxy_pass   http://127.0.0.1:8081;
@@ -59,10 +61,13 @@ http {
     }
 
     server {
-        listen       127.0.0.1:8081 sndbuf=64k;
+        listen       127.0.0.1:8081;
         server_name  localhost;
 
-        location / { }
+        location / {
+            limit_rate $rate;
+            add_header age $arg_age;
+        }
     }
 }
 
@@ -87,66 +92,20 @@ foreach my $name ('localhost') {
 }
 
 $t->write_file('t.html', 'SEE-THIS');
-$t->write_file('tbig.html',
-	join('', map { sprintf "XX%06dXX", $_ } (1 .. 500000)));
 
 open OLDERR, ">&", \*STDERR; close STDERR;
 $t->run();
 open STDERR, ">&", \*OLDERR;
 
-plan(skip_all => 'no ALPN/NPN negotiation') unless defined getconn(port(8080));
-$t->plan(7);
-
 ###############################################################################
-
-# client cancels stream with a cacheable request sent to upstream causing alert
 
 my $s = getconn(port(8080));
 ok($s, 'ssl connection');
 
-my $sid = $s->new_stream();
-$s->h2_rst($sid, 8);
-
-$sid = $s->new_stream({ path => '/t.html' });
-my $frames = $s->read(all => [{ sid => $sid, fin => 1 }]);
-
-my ($frame) = grep { $_->{type} eq "HEADERS" } @$frames;
-is($frame->{headers}->{':status'}, '200', 'proxy cache');
-
-# request body with cached response
-
-$sid = $s->new_stream({ path => '/t.html', body_more => 1 });
-$s->h2_body('TEST');
-$frames = $s->read(all => [{ sid => $sid, fin => 1 }]);
-
-($frame) = grep { $_->{type} eq "HEADERS" } @$frames;
-is($frame->{headers}->{':status'}, 200, 'proxy cache - request body');
-is($frame->{headers}->{'age'}, 0, 'proxy cache - age');
-
-$s->h2_ping('SEE-THIS');
-$frames = $s->read(all => [{ type => 'PING' }]);
-
-($frame) = grep { $_->{type} eq "PING" && $_->{flags} & 0x1 } @$frames;
-ok($frame, 'proxy cache - request body - next');
-
-select(undef, undef, undef, 2.0);
-
-$sid = $s->new_stream({ path => '/t.html', body_more => 1 });
-$s->h2_body('TEST');
-$frames = $s->read(all => [{ sid => $sid, fin => 1 }]);
-
-($frame) = grep { $_->{type} eq "HEADERS" } @$frames;
-is($frame->{headers}->{':status'}, 200, 'proxy cache - request body');
-is($frame->{headers}->{'age'}, 2, 'proxy cache - age');
-
-# large response may stuck in SSL buffer and won't be sent producing alert
-
-my $s2 = getconn(port(8080));
-$sid = $s2->new_stream({ path => '/tbig.html' });
-$s2->h2_window(2**30, $sid);
-$s2->h2_window(2**30);
-
-select undef, undef, undef, 0.2;
+test_age($s, '/t.html', undef, 0, 2);
+test_age($s, '/t.html?age=1', 1, 1, 3);
+test_age($s, '/t.html?slow=1', undef, 1, 3);
+test_age($s, '/t.html?age=1&slow=1', 1, 2, 4);
 
 $t->stop();
 
@@ -173,6 +132,32 @@ sub getconn {
 	};
 
 	return $s;
+}
+
+sub test_age {
+    my ($s, $path, $age1, $age2, $age3) = @_;
+
+    my ($sid, $frames, $frame);
+
+    $sid = $s->new_stream({ path => $path });
+    $frames = $s->read(all => [{ sid => $sid, fin => 1 }]);
+    ($frame) = grep { $_->{type} eq "HEADERS" } @$frames;
+    is($frame->{headers}->{':status'}, 200, 'status');
+    is($frame->{headers}->{'age'}, $age1, 'age');
+
+    $sid = $s->new_stream({ path => $path });
+    $frames = $s->read(all => [{ sid => $sid, fin => 1 }]);
+    ($frame) = grep { $_->{type} eq "HEADERS" } @$frames;
+    is($frame->{headers}->{':status'}, 200, 'status');
+    is($frame->{headers}->{'age'}, $age2, 'age');
+
+    select undef, undef, undef, 2.0;
+
+    $sid = $s->new_stream({ path => $path });
+    $frames = $s->read(all => [{ sid => $sid, fin => 1 }]);
+    ($frame) = grep { $_->{type} eq "HEADERS" } @$frames;
+    is($frame->{headers}->{':status'}, 200, 'status');
+    is($frame->{headers}->{'age'}, $age3, 'age');
 }
 
 ###############################################################################
