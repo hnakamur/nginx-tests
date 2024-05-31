@@ -24,7 +24,7 @@ select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
 my $t = Test::Nginx->new()->has(qw/http http_v3 proxy cryptx/)
-	->has_daemon('openssl')->plan(24)
+	->has_daemon('openssl')->plan(30)
 	->write_file_expand('nginx.conf', <<'EOF');
 
 %%TEST_GLOBALS%%
@@ -102,9 +102,20 @@ $t->run();
 my $s = Test::Nginx::HTTP3->new();
 
 test_age($s, '/t.html', undef, 0, 2);
+my $t1 = time();
+
 test_age($s, '/t.html?age=1', 1, 1, 3);
 test_age($s, '/t.html?slow=1', undef, 1, 3);
 test_age($s, '/t.html?age=1&slow=1', 1, 2, 4);
+
+$t->stop();
+
+$t->run();
+
+$s = Test::Nginx::HTTP3->new();
+
+my $rt1 = time() - $t1; # resident time
+test_age($s, '/t.html', $rt1 + 2, $rt1 + 2, $rt1 + 4);
 
 $t->stop();
 

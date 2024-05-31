@@ -21,7 +21,7 @@ use Test::Nginx qw/ :DEFAULT :gzip /;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http proxy cache gzip/)->plan(24)
+my $t = Test::Nginx->new()->has(qw/http proxy cache gzip/)->plan(30)
 	->write_file_expand('nginx.conf', <<'EOF');
 
 %%TEST_GLOBALS%%
@@ -76,9 +76,18 @@ $t->run();
 ###############################################################################
 
 test_age('/t.html', undef, 0, 2);
+my $t1 = time();
+
 test_age('/t.html?age=1', 1, 1, 3);
 test_age('/t.html?slow=1', undef, 1, 3);
 test_age('/t.html?age=1&slow=1', 1, 2, 4);
+
+$t->stop();
+
+$t->run();
+
+my $rt1 = time() - $t1; # resident time
+test_age('/t.html', $rt1 + 2, $rt1 + 2, $rt1 + 4);
 
 $t->stop();
 

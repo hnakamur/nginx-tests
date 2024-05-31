@@ -23,7 +23,7 @@ use Test::Nginx::HTTP2;
 select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
-my $t = Test::Nginx->new()->has(qw/http http_v2 proxy cache/)->plan(24)
+my $t = Test::Nginx->new()->has(qw/http http_v2 proxy cache/)->plan(30)
 	->write_file_expand('nginx.conf', <<'EOF');
 
 %%TEST_GLOBALS%%
@@ -80,9 +80,22 @@ open STDERR, ">&", \*OLDERR;
 my $s = Test::Nginx::HTTP2->new();
 
 test_age($s, '/t.html', undef, 0, 2);
+my $t1 = time();
+
 test_age($s, '/t.html?age=1', 1, 1, 3);
 test_age($s, '/t.html?slow=1', undef, 1, 3);
 test_age($s, '/t.html?age=1&slow=1', 1, 2, 4);
+
+$t->stop();
+
+open OLDERR, ">&", \*STDERR; close STDERR;
+$t->run();
+open STDERR, ">&", \*OLDERR;
+
+$s = Test::Nginx::HTTP2->new();
+
+my $rt1 = time() - $t1; # resident time
+test_age($s, '/t.html', $rt1 + 2, $rt1 + 2, $rt1 + 4);
 
 $t->stop();
 
